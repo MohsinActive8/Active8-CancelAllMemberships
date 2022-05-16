@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Data.SqlClient;
+using System.IO;
 
 namespace Active8_CancelAllMemberships
 {
@@ -15,6 +16,7 @@ namespace Active8_CancelAllMemberships
     /// </summary>
     class Program
     {
+        private static List<int> arr;
         static void Main(string[] args)
         {
             DateTime start, end;
@@ -37,39 +39,63 @@ namespace Active8_CancelAllMemberships
 
                 Logger.Log("Getting users list to cancel memberships...");
 
-                string query = ConfigurationManager.AppSettings.Get("query");
+                //string query = ConfigurationManager.AppSettings.Get("query");
+                ReadFromTextFile();
+                string query = $"select * from jmp.AccountWallet where AccountID in({String.Join(',', arr)})";
 
                 if (String.IsNullOrEmpty(query))
                 {
                     throw new Exception("\"query\" should not be null or empty");
                 }
 
-                List<MembershipUsersModel> users = GetUsers(query, conn);
+                List<AccountWalletModel> accWallets = GetAccountWallet(query, conn);
 
-                Logger.Log($"Record Fetched :: {users.Count}");
-
-                /// TODO: Delete Membership
-                foreach (var user in users)
+                for (int i = 0; i < accWallets.Count; i++)
                 {
                     try
                     {
-                        Logger.Log($"Person ID :: {user.PersonID}, Salesdocument ID :: {user.ContractSalesDocumentID}, Membership ID :: {user.MembershipID}, Membership Status ID :: {user.MembershipStatusID}");
-                        
-                        var resp = ApiCall.Custom("FusionFramework.Objects.Web.SalesDocument", "CancelContract", 
-                            new Dictionary<string, object>
-                            {
-                                {"salesDocumentID", user.ContractSalesDocumentID},
-                                {"voidContract", false }
-                            }, "f4aefc3c3a0233367502f171a395841f");
+                        Logger.Log($"Processing {i + 1} of {accWallets.Count}");
+                        Logger.Log($"AccountWallet ID :: {accWallets[i].AccountWalletID}, Account ID :: {accWallets[i].AccountID}, CCNumber :: {accWallets[i].CCNumber}");
 
-                        Logger.CustomLog($"Process of MemberShip Termination for Person {user.PersonID} ended.", LogStatus.success);
-                        Logger.CustomLog(JsonConvert.SerializeObject(resp), LogStatus.success);
+                        var encryptedToken = Security.Encrypt(accWallets[i].CCNumber, ConfigurationManager.AppSettings.Get("Secret"));
+
+                        var res = UpdateAccountWalletToken(accWallets[i].AccountWalletID, encryptedToken, conn);
+                        Logger.Log($"{res} rows affected");
+
                     }
                     catch (Exception ex)
                     {
+
                         Logger.LogError(ex);
                     }
                 }
+
+                //List<MembershipUsersModel> users = GetUsers(query, conn);
+
+                //Logger.Log($"Record Fetched :: {users.Count}");
+
+                ///// TODO: Delete Membership
+                //foreach (var user in users)
+                //{
+                //    try
+                //    {
+                //        Logger.Log($"Person ID :: {user.PersonID}, Salesdocument ID :: {user.ContractSalesDocumentID}, Membership ID :: {user.MembershipID}, Membership Status ID :: {user.MembershipStatusID}");
+
+                //        var resp = ApiCall.Custom("FusionFramework.Objects.Web.SalesDocument", "CancelContract", 
+                //            new Dictionary<string, object>
+                //            {
+                //                {"salesDocumentID", user.ContractSalesDocumentID},
+                //                {"voidContract", true }
+                //            }, "f4aefc3c3a0233367502f171a395841f");
+
+                //        Logger.CustomLog($"Process of MemberShip Termination for Person {user.PersonID} ended.", LogStatus.success);
+                //        Logger.CustomLog(JsonConvert.SerializeObject(resp), LogStatus.success);
+                //    }
+                //    catch (Exception ex)
+                //    {
+                //        Logger.LogError(ex);
+                //    }
+                //}
 
                 end = DateTime.Now;
                 TimeSpan duration = end - start;
@@ -81,6 +107,48 @@ namespace Active8_CancelAllMemberships
             }
 
 
+        }
+
+        private static List<AccountWalletModel> GetAccountWallet(string query, SqlConnection conn)
+        {
+            Logger.LogSql(query);
+
+            List<AccountWalletModel> data = new List<AccountWalletModel>();
+
+            using (SqlCommand command = new SqlCommand(query, conn))
+            {
+                var reader = command.ExecuteReader();
+                Logger.Log("Reading Data....");
+                while (reader.Read())
+                {
+                    Console.WriteLine(reader.ToString());
+                    var row = new AccountWalletModel()
+                    {
+                        AccountWalletID = SafeConvert.SafeInt(reader["AccountWalletID"].ToString().Trim()),
+                        AccountID = SafeConvert.SafeInt(reader["AccountID"].ToString().Trim()),
+                        Name = reader["Name"].ToString().Trim(),
+                        CCNumber = reader["CCNumber"].ToString().Trim()
+                    };
+
+                    data.Add(row);
+                }
+                if (!reader.IsClosed)
+                    reader.Close();
+
+                return data;
+            }
+        }
+        
+        private static int UpdateAccountWalletToken(int AccountWalletID, string token, SqlConnection conn)
+        {
+            string query = "update jmp.AccountWallet set CCNumber = '"+token+ "' where AccountWalletID = "+AccountWalletID+"";
+            Logger.LogSql(query);
+
+            using (SqlCommand command = new SqlCommand(query, conn))
+            {
+                var reader = command.ExecuteNonQuery();
+                return reader;
+            }
         }
 
         private static List<MembershipUsersModel> GetUsers(string query, SqlConnection conn)
@@ -121,6 +189,28 @@ namespace Active8_CancelAllMemberships
                     reader.Close();
 
                 return data;
+            }
+        }
+        static void ReadFromTextFile()
+        {
+            string filename = ConfigurationManager.AppSettings.Get("FileName");
+            string path = Path.Combine(Directory.GetCurrentDirectory(), filename);
+            if (File.Exists(path))
+            {
+                using (StreamReader file = new StreamReader(path))
+                {
+                    string ln;
+                    arr = new List<int>();
+                    while ((ln = file.ReadLine()) != null)
+                    {
+                        Console.WriteLine(ln);
+                        arr.Add(Convert.ToInt32(ln));
+                    }
+                }
+            }
+            else
+            {
+                Console.WriteLine($"Cannot find the specified file on path : {path}");
             }
         }
     }
